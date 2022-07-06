@@ -1,0 +1,314 @@
+#!/bin/env ruby
+
+#  ---------  #
+# | imports | #
+#  ---------  #
+
+require "date"
+require "fileutils"
+# use pandoc syscall instead
+# require "commonmarker" 
+require "fastimage"
+
+#  -----------  #
+# | variables | #
+#  -----------  #
+
+# optionally change these
+WORKING_DIR = Dir.pwd
+# comment this one out if not in use
+BACKUP_DIR = "/home/a/Documents/blog_bak/"
+
+# don't change these
+DRAFT_DIR = "drafts/"
+TEMPLATE_DIR = "templates/"
+OUT_DIR = "out/"
+POST_DIR = OUT_DIR + "p/"
+TODAY = DateTime.now
+
+#  -----------  #
+# | functions | #
+#  -----------  #
+
+def write_template(tmpl, f)
+  # tmpl = name of template to read from
+  lines = File.readlines(TEMPLATE_DIR + tmpl)
+
+  lines.each do |l|
+    f.write(l)
+  end
+end
+
+def edit_post
+  posts = Dir[POST_DIR + "*"].sort_by { |f| File.ctime(f) }.reverse
+  posts.each_with_index do |p, i|
+    puts "[#{i}] #{p.split("/")[-1]}"
+  end
+
+  print "index of post to edit> "
+  index = $stdin.gets
+
+  FileUtils.mv(posts[index.to_i], DRAFT_DIR)
+
+  system("vim", DRAFT_DIR + posts[index.to_i].split("/")[-1] + "/in.md")
+end
+
+def remove_post
+  posts = Dir[POST_DIR + "*"].sort_by { |f| File.ctime(f) }.reverse
+  posts.each_with_index do |p, i|
+    puts "[#{i}] #{p.split("/")[-1]}"
+  end
+
+  print "index of post to remove> "
+  index = $stdin.gets
+
+  FileUtils.rm_r(posts[index.to_i])
+end
+
+def create_post
+  if ARGV[1] == nil
+    print "title of new post> "
+    title = $stdin.gets
+  else
+    title = ARGV[1]
+  end
+
+  new_dirpath = DRAFT_DIR + title.strip.gsub(" ", "_").gsub(/\W/, "").gsub(/__+/, "_") + "/"
+  FileUtils.mkdir(new_dirpath)
+  File.open(new_dirpath + "in.md", "w") do |f|
+    f.write("# " + title.strip + "\n")
+    f.write(TODAY.strftime("%m/%d/%y") + "\n")
+    f.write("\n")
+    f.write("---")
+    f.write("\n")
+    f.write("\n")
+  end
+
+  system("vim", new_dirpath + "in.md")
+
+  puts "new draft created at #{new_dirpath}"
+end
+
+def backup_post(p)
+  begin
+    if not Dir.exist?(BACKUP_DIR + p.split("/")[-1])
+      FileUtils.cp_r(p, BACKUP_DIR)
+    end
+  rescue NameError
+    puts "skipping post backup"
+  end
+end
+
+def assemble_post(p)
+  if Dir.exist?(p + "/index.html")
+    FileUtils.rm(p + "/index.html")
+  end
+
+  content = File.readlines(p + "/in.md")
+  date = content.delete_at(1).downcase
+  title = content[0]
+
+  File.open(p + "/index.html", "w") do |f|
+    # a lot slower than commonmarker line by line conversion but less code == less code
+    system("pandoc -f markdown -t html -o #{p}/post.html #{p}/in.md")
+
+    post_html = File.readlines(p + "/post.html")
+    
+    write_template("head_post.html", f)
+    # convert markdown to html using pandoc, output temporary file, then delete converted html file
+    post_html.each do |line|
+      f.write(line)
+    end
+    FileUtils.rm_r(p + "/post.html")
+
+    f.write("<hr>\n")
+    f.write("<p class=\"quote\"><span class=\"quote-text\">\"Practiced hands make for short work, and the Good Lord knows there is much to be done here.\"</span> - <span class=\"quote-source\">Joshua Graham</span></p>")
+
+    #backtick_c = 0
+    #date_added = false
+
+    #content.each do |line|
+    #  # if line is empty after removing newline escapes, don't write it
+    #  if line.gsub("\n", "") != ""
+    #    if date_added
+    #      # use markdown parser to render html file line by line
+    #      if line == "```\n"
+    #        if backtick_c % 2 == 0
+    #          f.write("<pre>\n")
+    #        else
+    #          f.write("</pre>\n")
+    #        end
+    #        backtick_c += 1
+    #      else
+    #        if backtick_c % 2 == 0
+    #          if line.include?("![]")
+    #            f.write(CommonMarker.render_html(line).gsub("<p>", "").gsub("</p>", ""))
+    #          else
+    #            f.write(CommonMarker.render_html(line))
+    #          end
+    #        else
+    #          line = line.gsub("<", "&lt;").gsub(">", "&gt;")
+    #          f.write(line)
+    #        end
+    #      end
+    #    else
+    #      f.write(CommonMarker.render_html(line))
+    #      f.write("<span class=\"date\">" + date.gsub("\n", "") + "</span>\n")
+    #      f.write("<hr>\n")
+    #      date_added = true
+    #    end
+    #  end
+    #end
+
+    write_template("foot.html", f)
+  end
+end
+
+def publish_posts
+  posts = Dir[DRAFT_DIR + "*"]
+  images = Dir.glob(DRAFT_DIR + "*/*.{png,jpeg,jpg}")
+
+  # resize image files with larger dimensions to 600 width
+  if images.length > 0
+    images.each do |i|
+      name = i.split("/")[-1].split(".")[0]
+      if name.include? "small"
+        size = 320
+      elsif name.include? "medium"
+        size = 640
+      elsif name.include? "large"
+        size = 1024
+      end
+
+      # resize image width based on name aka desired size
+      system("convert #{i} -resize #{size.to_s}\\> #{i}") unless FastImage.size(i)[0] <= size or size == nil
+    end
+  end
+
+  post_hash = {}
+
+  # sort posts by date, publish them in descending order
+  posts.each do |p|
+    p += "/in.md"
+    post_hash[DateTime.strptime(File.readlines(p)[1], "%m/%d/%y").strftime("%Y-%m-%d")] = p.split("/")[-2]
+  end
+
+  post_hash.sort.to_h.each do |k, v|
+    assemble_post(DRAFT_DIR + v)
+    backup_post(DRAFT_DIR + v)
+    FileUtils.mv(DRAFT_DIR + v, POST_DIR + v)
+    # wait so creation time differs enough to sort by it when building index
+    sleep(1)
+  end
+
+  build_index
+end
+
+# modify this 
+def sync_posts
+  system("rsync -qrzhP #{OUT_DIR} user@example.com:/data")
+end
+
+def build_index
+  posts = Dir[POST_DIR + "*"].sort_by { |f| File.ctime(f) }.reverse
+
+  File.open(OUT_DIR + "index.html", "w+") do |f|
+    write_template("head_index.html", f)
+
+    # write post list
+    f.write("<table id=\"posts\">\n")
+    f.write("<tbody>\n")
+
+    posts.each do |p|
+      # puts p
+      buf = File.readlines(p + "/in.md")[0..1]
+      rel_path = p.split("/")[-1]
+      title = buf[0][2..].strip
+      date = DateTime.strptime(buf[1].gsub(",","").gsub("\n",""), "%m/%d/%y")
+      
+      f.write("<tr><td><span class=\"date\">" + date.strftime("%b %y").downcase + "</span></td><td><a href=\"p/" + rel_path + "\">" + title + "</a></div>\n")
+    end
+
+    f.write("</tbody>\n")
+    f.write("</table>\n")
+
+    # write link list
+    f.write("<ul id=\"links\">\n")
+    f.write("<li><a href=#>git</a> (currently out of service)</li> / \n")
+    f.write("<li><a href=#>linkedin</a></li> /\n")
+    f.write("</ul>\n")
+
+    write_template("foot.html", f)
+  end
+end
+
+def fetch_posts
+  Dir[POST_DIR + "*"].each do |e|
+    FileUtils.mv(e, DRAFT_DIR)
+  end
+end
+
+def print_usage
+  puts "usage: ./srb {"
+  puts "  n(ew) [title] - create new draft"
+  puts "  p(ublish) - publish all posts to the blog"
+  puts "  e(dit) - move a post back to draft folder for editing"
+  puts "  f(etch) - move all posts back to draft folder"
+  puts "  r(emove) - permanently remove a published post"
+  puts "  s(ync) - sync out directory to remote server"
+  puts "}"
+end
+
+def run
+  Dir.chdir(WORKING_DIR)
+
+  # initial dir setup
+  if not Dir.exist?(DRAFT_DIR)
+    FileUtils.mkdir_p(DRAFT_DIR)
+  end
+
+  if not Dir.exist?(POST_DIR)
+    FileUtils.mkdir_p(POST_DIR)
+  end
+  
+  begin
+    if not Dir.exist?(BACKUP_DIR)
+      FileUtils.mkdir_p(BACKUP_DIR)
+    end
+  rescue NameError
+    puts "skipping creation of backup directory"
+  end
+
+  operation = ARGV[0]
+
+  case operation
+  when "n"
+    create_post
+  when "r"
+    remove_post
+  when "e"
+    edit_post
+  when "p"
+    publish_posts
+  when "f"
+    fetch_posts
+  when "s"
+    sync_posts
+  # makeover
+  when "m"
+    fetch_posts
+    publish_posts
+    sync_posts
+  else
+    print_usage
+  end
+
+  build_index
+end
+
+#  -----------  #
+# | execution | #
+#  -----------  #
+
+run
+
